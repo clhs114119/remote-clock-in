@@ -12,18 +12,14 @@
             margin: 20px auto; 
             padding: 20px; 
             background: #eef2f5; 
-            
             touch-action: manipulation;
         }
         
-        /* 標題與版本號 */
         .header { text-align: center; margin-bottom: 20px; }
         .header h2 { margin: 0; color: #2c3e50; display: inline-block; }
         .version-tag { font-size: 12px; background: transparent; color: #2c3e50; padding: 2px 8px; border-radius: 12px; cursor: pointer; user-select: none; margin-left: 5px; }
 
         .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.08); margin-bottom: 20px; }
-        
-        /* 預設隱藏區域 */
         .hidden-section { display: none; }
 
         button, select, input { padding: 12px; margin: 5px 0; width: 100%; box-sizing: border-box; font-size: 16px; border-radius: 6px; border: 1px solid #ccc; }
@@ -32,14 +28,12 @@
         button:active:not(:disabled) { transform: scale(0.98); }
         .grid-btn { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
         
-        /* 雙指示燈 */
         .status-panel { display: flex; gap: 10px; margin-bottom: 20px; }
         .status-box { flex: 1; padding: 10px; text-align: center; border-radius: 8px; font-weight: bold; color: white; font-size: 13px; }
         .bg-gray { background: #95a5a6; }
         .bg-red { background: #e74c3c; }
         .bg-green { background: #2ecc71; }
 
-        /* 成功發送提示 Toast */
         #toast {
             visibility: hidden;
             min-width: 200px;
@@ -61,7 +55,6 @@
         @keyframes fadein { from { top: 0; opacity: 0; } to { top: 30px; opacity: 1; } }
         @keyframes fadeout { from { top: 30px; opacity: 1; } to { top: 0; opacity: 0; } }
 
-        /* 頁尾連結 */
         .footer { text-align: center; font-size: 14px; margin-top: 30px; }
         .footer a { color: #3498db; text-decoration: none; font-weight: bold; }
         .footer a:hover { text-decoration: underline; }
@@ -71,19 +64,16 @@
 
     <div id="toast">發送成功！</div>
 
-    <!-- 頂部標題與版本號 -->
     <div class="header">
         <h2>19遠端簽到系統</h2>
-        <span id="versionBtn" class="version-tag" onclick="clickVersion()">v1.2.2</span>
+        <span id="versionBtn" class="version-tag" onclick="clickVersion()">v1.3.0</span>
     </div>
 
-    <!-- 連線狀態面板 -->
     <div class="status-panel">
         <div id="webStatus" class="status-box bg-red">網頁雲端: 斷線</div>
         <div id="espStatus" class="status-box bg-gray">神秘小東東: 未知</div>
     </div>
 
-    <!-- 預設輸入區域 (預設顯示) -->
     <div class="card">
         <h3>📂 選取座號</h3>
         <select id="presetSelect">
@@ -92,14 +82,12 @@
         <button id="btnPreset" onclick="sendPreset()" style="background:#27ae60; color:white;">發送卡號</button>
     </div>
 
-    <!-- 自訂輸入區域 (預設隱藏) -->
     <div id="secCustom" class="card hidden-section">
         <h3>⌨ 自訂輸入</h3>
         <input type="text" id="customInput" placeholder="要輸入的字...">
         <button id="btnCustom" onclick="sendCustom()" style="background:#3498db; color:white;">發送文字</button>
     </div>
 
-    <!-- 鍵盤控制鍵區域 (預設隱藏) -->
     <div id="secControl" class="card hidden-section">
         <h3>🕹️ 控制鍵</h3>
         <div class="grid-btn">
@@ -117,7 +105,6 @@
         </div>
     </div>
 
-    <!-- 頁尾超連結 -->
     <div class="footer">
         <a href="https://docs.google.com/spreadsheets/d/1qJ38PUGd9YOmN7-RAYHMNFRwnk9aVbld_aDuKuJSJso/edit?usp=sharing" target="_blank">簽到確認（班級）</a>
         <span style="color: #ccc; margin: 0 10px;">|</span>
@@ -125,65 +112,129 @@
     </div>
 
     <script>
-        const brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
+        // --- 核心設定：三組 Broker 列表 (對應 WebSocket WSS 通訊埠) ---
+        const mqttBrokers = [
+            'wss://broker.emqx.io:8084/mqtt',       // EMQX
+            'wss://broker.hivemq.com:8884/mqtt',    // HiveMQ
+            'wss://test.mosquitto.org:8081/mqtt'    // Mosquitto
+        ];
+        
         const topicCmd = 'my_esp32s3zero_1145141919810_8964/hid/command'; 
-        const topicStatus = 'my_esp32s3zero_1145141919810_8964/hid/status'; // 用於接收硬體在線狀態
+        const topicStatus = 'my_esp32s3zero_1145141919810_8964/hid/status'; 
+        
+        let currentBrokerIndex = 0;
+        let client = null;
+        let searchESP32Timeout = null;
+        let heartbeatInterval = null;
         
         let isWebConnected = false;
         let isEspConnected = false;
         let versionClickCount = 0;
 
-        const client = mqtt.connect(brokerUrl, {
-            clientId: 'web_client_' + Math.random().toString(16).substr(2, 8)
-        });
-
         const webStatusDiv = document.getElementById('webStatus');
         const espStatusDiv = document.getElementById('espStatus');
 
-        // 更新 UI 鎖定狀態
+        // 更新按鈕鎖定狀態
         function updateUIState() {
             const canSend = isWebConnected && isEspConnected;
             const buttons = document.querySelectorAll('button');
             buttons.forEach(btn => btn.disabled = !canSend);
         }
 
-        // MQTT 事件
-        client.on('connect', () => {
-            isWebConnected = true;
-            webStatusDiv.textContent = '網頁雲端: 已連線';
-            webStatusDiv.className = 'status-box bg-green';
-            client.subscribe(topicStatus);
-            updateUIState();
-
-            // 連線後立即發送心跳包喚醒 神秘小東東
-            sendHeartbeat();
-        });
-
-        client.on('offline', () => {
+        // --- 切換 Broker 邏輯 ---
+        function switchBroker() {
+            if (client) {
+                client.end(true); // 強制斷開目前的連線
+                client = null;
+            }
+            clearTimeout(searchESP32Timeout);
+            clearInterval(heartbeatInterval);
+            
             isWebConnected = false;
             isEspConnected = false;
-            webStatusDiv.textContent = '網頁雲端: 斷線';
-            webStatusDiv.className = 'status-box bg-red';
-            espStatusDiv.textContent = '神秘小東東: 未知';
-            espStatusDiv.className = 'status-box bg-gray';
             updateUIState();
-        });
+            
+            webStatusDiv.textContent = '切換 Broker 中...';
+            webStatusDiv.className = 'status-box bg-red';
+            espStatusDiv.textContent = '神秘小東東: 尋找中';
+            espStatusDiv.className = 'status-box bg-gray';
 
-        client.on('message', (topic, message) => {
-            if (topic === topicStatus) {
-                const status = message.toString();
-                if (status === 'online') {
-                    isEspConnected = true;
-                    espStatusDiv.textContent = '神秘小東東: 上線待命';
-                    espStatusDiv.className = 'status-box bg-green';
-                } else {
-                    isEspConnected = false;
-                    espStatusDiv.textContent = '神秘小東東: 離線';
-                    espStatusDiv.className = 'status-box bg-red';
-                }
+            // 推進索引，如果到底了就回到第一個
+            currentBrokerIndex = (currentBrokerIndex + 1) % mqttBrokers.length;
+            
+            // 延遲 1.5 秒後再嘗試下一個，避免頻繁切換當機
+            setTimeout(connectMQTT, 1500); 
+        }
+
+        // --- MQTT 連線核心 ---
+        function connectMQTT() {
+            const brokerUrl = mqttBrokers[currentBrokerIndex];
+            webStatusDiv.textContent = `連線 Broker ${currentBrokerIndex + 1}...`;
+            webStatusDiv.className = 'status-box bg-gray';
+
+            // 關閉自動重連 (reconnectPeriod: 0)，由我們自己控制換伺服器邏輯
+            client = mqtt.connect(brokerUrl, {
+                clientId: 'web_client_' + Math.random().toString(16).substr(2, 8),
+                reconnectPeriod: 0 
+            });
+
+            // 成功連上目前的 Broker
+            client.on('connect', () => {
+                isWebConnected = true;
+                webStatusDiv.textContent = `雲端: 已連線 (${currentBrokerIndex + 1})`;
+                webStatusDiv.className = 'status-box bg-green';
+                
+                client.subscribe(topicStatus);
                 updateUIState();
-            }
-        });
+
+                espStatusDiv.textContent = '尋找神秘小東東...';
+                espStatusDiv.className = 'status-box bg-gray';
+
+                // 啟動 5 秒尋找倒數：如果神秘小東東不在這裡，就切換下一家
+                searchESP32Timeout = setTimeout(() => {
+                    if (!isEspConnected) {
+                        espStatusDiv.textContent = '此處找不到，切換中...';
+                        switchBroker();
+                    }
+                }, 5000);
+
+                // 啟動心跳包
+                heartbeatInterval = setInterval(sendHeartbeat, 30000);
+                sendHeartbeat();
+            });
+
+            // 接收訊息
+            client.on('message', (topic, message) => {
+                if (topic === topicStatus) {
+                    const status = message.toString();
+                    if (status === 'online') {
+                        isEspConnected = true;
+                        clearTimeout(searchESP32Timeout); // 🎉 找到了！取消倒數計時
+                        espStatusDiv.textContent = '神秘小東東: 上線待命';
+                        espStatusDiv.className = 'status-box bg-green';
+                    } else if (status === 'offline') {
+                        isEspConnected = false;
+                        espStatusDiv.textContent = '神秘小東東: 剛離線';
+                        espStatusDiv.className = 'status-box bg-red';
+                        // 硬體斷線了，網頁主動出擊去其他伺服器找找看
+                        setTimeout(switchBroker, 1500); 
+                    }
+                    updateUIState();
+                }
+            });
+
+            // 連線錯誤或斷開
+            client.on('error', () => {
+                if(isWebConnected) switchBroker();
+            });
+
+            client.on('close', () => {
+                if (isWebConnected) switchBroker();
+            });
+        }
+
+        // 啟動第一次連線
+        connectMQTT();
 
         // 讀取 JSON
         fetch('commands.json')
@@ -212,7 +263,7 @@
 
         // 發送指令核心
         function sendCmd(command) {
-            if (!isWebConnected || !isEspConnected) {
+            if (!isWebConnected || !isEspConnected || !client) {
                 alert("⚠️ 雲端與 神秘小東東 必須皆處於連線狀態才能發送指令！");
                 return;
             }
@@ -237,13 +288,12 @@
             input.value = ''; 
         }
 
-        // 定時心跳包 (每 30 秒發送一次，避免 神秘小東東 進入休眠)
+        // 定時心跳包
         function sendHeartbeat() {
-            if (isWebConnected) {
+            if (isWebConnected && client) {
                 client.publish(topicCmd, 'HEARTBEAT');
             }
         }
-        setInterval(sendHeartbeat, 30000);
 
         // 連續點擊版本號 7 次觸發隱藏功能
         function clickVersion() {
@@ -256,7 +306,6 @@
             }
         }
 
-        // 初始進入時將所有按鈕設為禁用，等待雙向連線完成
         updateUIState();
     </script>
 </body>
