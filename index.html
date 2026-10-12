@@ -66,7 +66,7 @@
 
     <div class="header">
         <h2>19遠端簽到系統</h2>
-        <span id="versionBtn" class="version-tag" onclick="clickVersion()">v1.3.0</span>
+        <span id="versionBtn" class="version-tag" onclick="clickVersion()">v1.3.1</span>
     </div>
 
     <div class="status-panel">
@@ -125,6 +125,7 @@
         let currentBrokerIndex = 0;
         let client = null;
         let searchESP32Timeout = null;
+        let connectionTimeout = null; // 🌟 新增：用來判定「連線伺服器」是否卡住的計時器
         let heartbeatInterval = null;
         
         let isWebConnected = false;
@@ -134,7 +135,6 @@
         const webStatusDiv = document.getElementById('webStatus');
         const espStatusDiv = document.getElementById('espStatus');
 
-        // 更新按鈕鎖定狀態
         function updateUIState() {
             const canSend = isWebConnected && isEspConnected;
             const buttons = document.querySelectorAll('button');
@@ -144,10 +144,11 @@
         // --- 切換 Broker 邏輯 ---
         function switchBroker() {
             if (client) {
-                client.end(true); // 強制斷開目前的連線
+                client.end(true); 
                 client = null;
             }
             clearTimeout(searchESP32Timeout);
+            clearTimeout(connectionTimeout); // 🌟 清除連線逾時計時器
             clearInterval(heartbeatInterval);
             
             isWebConnected = false;
@@ -159,10 +160,8 @@
             espStatusDiv.textContent = '神秘小東東: 尋找中';
             espStatusDiv.className = 'status-box bg-gray';
 
-            // 推進索引，如果到底了就回到第一個
             currentBrokerIndex = (currentBrokerIndex + 1) % mqttBrokers.length;
             
-            // 延遲 1.5 秒後再嘗試下一個，避免頻繁切換當機
             setTimeout(connectMQTT, 1500); 
         }
 
@@ -172,14 +171,24 @@
             webStatusDiv.textContent = `連線 Broker ${currentBrokerIndex + 1}...`;
             webStatusDiv.className = 'status-box bg-gray';
 
-            // 關閉自動重連 (reconnectPeriod: 0)，由我們自己控制換伺服器邏輯
+            // 🌟 啟動雙重保險：加入 connectTimeout 參數，並自己設定 5 秒必切換
             client = mqtt.connect(brokerUrl, {
                 clientId: 'web_client_' + Math.random().toString(16).substr(2, 8),
-                reconnectPeriod: 0 
+                reconnectPeriod: 0,
+                connectTimeout: 5000 // 告訴套件 5 秒算超時
             });
+
+            // 如果 5 秒內套件還是卡死沒反應，我們自己強制切換
+            connectionTimeout = setTimeout(() => {
+                if (!isWebConnected) {
+                    console.log(`Broker ${currentBrokerIndex + 1} 連線逾時，強制切換`);
+                    switchBroker();
+                }
+            }, 5000);
 
             // 成功連上目前的 Broker
             client.on('connect', () => {
+                clearTimeout(connectionTimeout); // 🌟 成功連上伺服器，取消逾時保險
                 isWebConnected = true;
                 webStatusDiv.textContent = `雲端: 已連線 (${currentBrokerIndex + 1})`;
                 webStatusDiv.className = 'status-box bg-green';
@@ -198,7 +207,6 @@
                     }
                 }, 5000);
 
-                // 啟動心跳包
                 heartbeatInterval = setInterval(sendHeartbeat, 30000);
                 sendHeartbeat();
             });
@@ -209,14 +217,13 @@
                     const status = message.toString();
                     if (status === 'online') {
                         isEspConnected = true;
-                        clearTimeout(searchESP32Timeout); // 🎉 找到了！取消倒數計時
+                        clearTimeout(searchESP32Timeout); 
                         espStatusDiv.textContent = '神秘小東東: 上線待命';
                         espStatusDiv.className = 'status-box bg-green';
                     } else if (status === 'offline') {
                         isEspConnected = false;
                         espStatusDiv.textContent = '神秘小東東: 剛離線';
                         espStatusDiv.className = 'status-box bg-red';
-                        // 硬體斷線了，網頁主動出擊去其他伺服器找找看
                         setTimeout(switchBroker, 1500); 
                     }
                     updateUIState();
@@ -225,7 +232,7 @@
 
             // 連線錯誤或斷開
             client.on('error', () => {
-                if(isWebConnected) switchBroker();
+                if(!isWebConnected) switchBroker();
             });
 
             client.on('close', () => {
@@ -253,7 +260,6 @@
                 document.getElementById('presetSelect').innerHTML = '<option value="">載入失敗</option>';
             });
 
-        // 顯示提示訊息 (Toast)
         function showToast(msg) {
             const toast = document.getElementById("toast");
             toast.textContent = msg;
@@ -261,7 +267,6 @@
             setTimeout(() => { toast.className = toast.className.replace("show", ""); }, 2000);
         }
 
-        // 發送指令核心
         function sendCmd(command) {
             if (!isWebConnected || !isEspConnected || !client) {
                 alert("⚠️ 雲端與 神秘小東東 必須皆處於連線狀態才能發送指令！");
@@ -288,14 +293,12 @@
             input.value = ''; 
         }
 
-        // 定時心跳包
         function sendHeartbeat() {
             if (isWebConnected && client) {
                 client.publish(topicCmd, 'HEARTBEAT');
             }
         }
 
-        // 連續點擊版本號 7 次觸發隱藏功能
         function clickVersion() {
             versionClickCount++;
             if (versionClickCount === 7) {
